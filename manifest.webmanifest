@@ -1,0 +1,28 @@
+{
+  "name": "PhotoBoîte",
+  "short_name": "PhotoBoîte",
+  "description": "Convertir, retoucher et modifier les métadonnées de vos images, sans rien envoyer sur Internet.",
+  "lang": "fr",
+  "id": "./",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f6f9fd",
+  "theme_color": "#0b3a8a",
+  "categories": ["photo", "utilities", "productivity"],
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "file_handlers": [
+    {
+      "action": "./",
+      "accept": {
+        "image/*": [".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".heic", ".heif"],
+        "application/pdf": [".pdf"]
+      }
+    }
+  ]
+}
