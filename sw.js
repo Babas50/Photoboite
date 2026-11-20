@@ -1,6 +1,6 @@
 // Service worker : met l'application en cache pour qu'elle fonctionne hors connexion.
 // Changez CACHE à chaque mise en ligne d'une nouvelle version.
-const CACHE = 'photoboite-v1.0.0';
+const CACHE = 'photoboite-v1.1.0';
 const ASSETS = [
   './', 'index.html', 'manifest.webmanifest', 'css/style.css', 'js/app.js', 'js/config.js',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-512.png', 'icons/apple-touch-icon.png', 'icons/favicon.png',

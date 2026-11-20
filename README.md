@@ -25,6 +25,12 @@ Installable comme application (PWA) sur Windows, Android, iPhone et iPad, et uti
 - Titre, auteur, copyright, mots-clés, commentaire, note (étoiles), date de prise de vue (fixer ou décaler), position GPS (définir ou supprimer), suppression de toutes les métadonnées.
 - L'image n'est pas recompressée : seules les métadonnées changent.
 
+**Confort d'utilisation**
+- Glisser-déposer n'importe où dans la fenêtre, ou coller une image (Ctrl+V).
+- Préréglages : « PDF ou images en PNG », « Images en un seul PDF A4 », « Photos pour le web », « Photos pour e-mail ».
+- Réglages mémorisés d'une session à l'autre, thème sombre automatique, navigation en bas de l'écran sur mobile.
+- Raccourcis : Ctrl+O ouvrir, Ctrl+Z annuler, Ctrl+Y rétablir, Ctrl+S enregistrer (onglet Retoucher). Molette pour zoomer.
+
 ## Mise en ligne sur GitHub Pages
 
 1. Créez un dépôt sur GitHub (par exemple `photoboite`), public.
@@ -59,4 +65,4 @@ Le nom apparaît dans `js/config.js` (`APP_NAME`), `manifest.webmanifest` (`name
 
 ## Bibliothèques utilisées (incluses dans `vendor/`)
 
-pdf.js (Apache 2.0), pdf-lib (MIT), piexifjs (MIT), heic2any (MIT, libheif LGPL), JSZip (MIT), Cropper.js (MIT), gifenc (MIT).
+pdf.js (Apache 2.0), pdf-lib (MIT), piexifjs (MIT), heic2any (MIT, libheif LGPL), JSZip (MIT), Cropper.js (MIT), gifenc (MIT). Icônes dessinées dans le style Lucide (ISC).

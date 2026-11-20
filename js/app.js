@@ -16,9 +16,10 @@ const MAX_PIXELS = isIOS ? 16_000_000 : 120_000_000;
 const EXT = { png: '.png', jpeg: '.jpg', webp: '.webp', gif: '.gif', bmp: '.bmp', pdf: '.pdf' };
 const MIME = { png: 'image/png', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif', bmp: 'image/bmp', pdf: 'application/pdf' };
 
-function toast(msg, ms = 3500) {
+function toast(msg, { ms = 3500, error = false } = {}) {
   const t = $('#toast');
   t.textContent = msg;
+  t.classList.toggle('error', error);
   t.classList.add('show');
   clearTimeout(toast._t);
   toast._t = setTimeout(() => t.classList.remove('show'), ms);
@@ -425,13 +426,38 @@ class PdfBuilder {
 }
 
 // ---------------------------------------------------------------------------
-// Résultats : téléchargement, ZIP, partage
+// Éléments d'interface communs
 // ---------------------------------------------------------------------------
+const FMT_LABEL = { png: 'PNG', jpeg: 'JPG', webp: 'WebP', gif: 'GIF', bmp: 'BMP', pdf: 'PDF' };
+const plural = (n, one, many) => `${n} ${n > 1 ? many : one}`;
+
+function svgIcon(id) {
+  const ns = 'http://www.w3.org/2000/svg';
+  const s = document.createElementNS(ns, 'svg');
+  s.setAttribute('class', 'ic');
+  const u = document.createElementNS(ns, 'use');
+  u.setAttribute('href', '#i-' + id);
+  s.append(u);
+  return s;
+}
+function el(tag, props = {}, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (k === 'class') e.className = v;
+    else if (k === 'text') e.textContent = v;
+    else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
+    else if (v !== undefined && v !== null && v !== false) e.setAttribute(k, v === true ? '' : v);
+  }
+  for (const k of kids) if (k) e.append(k);
+  return e;
+}
+function iconButton(icon, title, onclick) {
+  return el('button', { type: 'button', title, 'aria-label': title, onclick: e => { e.stopPropagation(); onclick(e); } }, svgIcon(icon));
+}
+
 function download(blob, name) {
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = name;
-  document.body.appendChild(a);
+  const a = el('a', { href: URL.createObjectURL(blob), download: name });
+  document.body.append(a);
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 60_000);
@@ -447,77 +473,75 @@ async function zipBlob(items) {
   return zip.generateAsync({ type: 'blob', compression: 'STORE' });
 }
 
+const PREVIEWABLE = /^image\/(png|jpeg|webp|gif|bmp|avif)$/;
+function thumbEl(blob, label) {
+  if (blob && PREVIEWABLE.test(blob.type)) {
+    const url = URL.createObjectURL(blob);
+    const img = el('img', { class: 'thumb', alt: '', loading: 'lazy', src: url });
+    img.addEventListener('load', () => URL.revokeObjectURL(url), { once: true });
+    img.addEventListener('error', () => { URL.revokeObjectURL(url); img.replaceWith(placeholder(label)); }, { once: true });
+    return img;
+  }
+  return placeholder(label);
+}
+function placeholder(label) {
+  return el('div', { class: 'thumb ph' }, label === 'PDF' ? svgIcon('file') : svgIcon('image'));
+}
+const extOf = name => (name.match(/\.([^.]+)$/)?.[1] || '').toUpperCase().slice(0, 4);
+
+function tile({ blob, name, meta, tag, actions = [], onclick }) {
+  const t = el('div', { class: 'tile', title: name },
+    thumbEl(blob, tag),
+    tag ? el('span', { class: 'tag', text: tag }) : null,
+    el('div', { class: 'body' }, el('div', { class: 'name', text: name }), el('div', { class: 'meta', text: meta })),
+  );
+  if (actions.length) t.append(el('div', { class: 'actions' }, ...actions));
+  if (onclick) { t.style.cursor = 'pointer'; t.addEventListener('click', onclick); }
+  return t;
+}
+
 function showResults(box, items, errors, title) {
   box.innerHTML = '';
   if (!items.length && !errors.length) return;
-  const head = document.createElement('div');
-  head.className = 'head';
-  head.innerHTML = `<h3>${title}</h3>`;
-  const actions = document.createElement('div');
-  actions.className = 'row';
+  const total = items.reduce((s, it) => s + it.blob.size, 0);
+  const head = el('div', { class: 'head' },
+    el('div', { class: 'title' },
+      el('span', { class: 'okdot' }, svgIcon(items.length ? 'check' : 'x')),
+      el('div', {}, el('b', { text: title }), el('span', { text: items.length ? `${plural(items.length, 'fichier', 'fichiers')} · ${fmtSize(total)}` : 'Aucun fichier créé' }))));
+  const actions = el('div', { class: 'row-actions' });
   if (items.length > 1) {
-    const bz = button('Tout télécharger (.zip)', 'btn primary small', async () => {
-      bz.disabled = true; bz.textContent = 'Préparation…';
-      try { download(await zipBlob(items), `${APP_NAME} - ${new Date().toISOString().slice(0, 10)}.zip`); }
-      finally { bz.disabled = false; bz.textContent = 'Tout télécharger (.zip)'; }
-    });
+    const bz = el('button', { class: 'btn btn-primary', type: 'button' }, svgIcon('archive'), el('span', { text: 'Tout télécharger (ZIP)' }));
+    bz.onclick = async () => {
+      bz.disabled = true;
+      try { download(await zipBlob(items), `${APP_NAME} ${new Date().toISOString().slice(0, 10)}.zip`); }
+      catch (e) { toast('Création du ZIP impossible : ' + e.message, { error: true }); }
+      finally { bz.disabled = false; }
+    };
     actions.append(bz);
+  } else if (items.length === 1) {
+    actions.append(el('button', { class: 'btn btn-primary', type: 'button', onclick: () => download(items[0].blob, items[0].name) }, svgIcon('download'), el('span', { text: 'Télécharger' })));
   }
   const files = items.map(it => new File([it.blob], it.name, { type: it.blob.type }));
   if (items.length && canShareFiles(files)) {
-    actions.append(button(items.length > 1 ? 'Partager / Enregistrer dans Photos' : 'Partager / Enregistrer', 'btn small', async () => {
-      try { await navigator.share({ files }); }
-      catch (e) { if (e.name !== 'AbortError') toast('Partage impossible : ' + e.message); }
-    }));
+    actions.append(el('button', {
+      class: 'btn', type: 'button', onclick: async () => {
+        try { await navigator.share({ files }); }
+        catch (e) { if (e.name !== 'AbortError') toast('Partage impossible : ' + e.message, { error: true }); }
+      },
+    }, svgIcon('share'), el('span', { text: 'Partager ou enregistrer' })));
   }
   head.append(actions);
   box.append(head);
-  const list = document.createElement('div');
-  list.className = 'files';
-  for (const it of items) {
-    const row = document.createElement('div');
-    row.className = 'file';
-    const th = thumbFor(it.blob);
-    const a = document.createElement('a');
-    a.href = '#'; a.textContent = 'Télécharger';
-    a.onclick = e => { e.preventDefault(); download(it.blob, it.name); };
-    row.append(th, span('name', it.name), span('meta', fmtSize(it.blob.size) + (it.note ? ' · ' + it.note : '')), a);
-    list.append(row);
+  if (items.length) {
+    box.append(el('div', { class: 'tiles' }, ...items.map(it => tile({
+      blob: it.blob, name: it.name, tag: extOf(it.name),
+      meta: fmtSize(it.blob.size) + (it.note ? ' · ' + it.note : ''),
+      actions: [iconButton('download', 'Télécharger', () => download(it.blob, it.name))],
+      onclick: () => download(it.blob, it.name),
+    }))));
   }
-  box.append(list);
-  if (errors.length) {
-    const ul = document.createElement('ul');
-    ul.className = 'errors';
-    for (const e of errors) { const li = document.createElement('li'); li.textContent = e; ul.append(li); }
-    box.append(ul);
-  }
+  if (errors.length) box.append(el('ul', { class: 'errors' }, ...errors.map(e => el('li', { text: e }))));
   box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-}
-
-function button(text, cls, onclick) {
-  const b = document.createElement('button');
-  b.className = cls; b.textContent = text; b.onclick = onclick;
-  return b;
-}
-function span(cls, text) {
-  const s = document.createElement('span');
-  s.className = cls; s.textContent = text;
-  return s;
-}
-function thumbFor(blob, label) {
-  if (blob && /^image\/(png|jpeg|webp|gif|bmp)$/.test(blob.type)) {
-    const img = document.createElement('img');
-    img.className = 'thumb';
-    img.loading = 'lazy';
-    img.alt = '';
-    img.src = URL.createObjectURL(blob);
-    img.onload = img.onerror = () => setTimeout(() => URL.revokeObjectURL(img.src), 1000);
-    return img;
-  }
-  const d = document.createElement('div');
-  d.className = 'thumb';
-  d.textContent = label || (blob?.type === 'application/pdf' ? 'PDF' : (blob?.name?.split('.').pop() || '').toUpperCase().slice(0, 4));
-  return d;
 }
 
 function setProgress(el, done, total, label) {
@@ -526,26 +550,20 @@ function setProgress(el, done, total, label) {
   el.lastElementChild.textContent = label;
 }
 
-function setupDrop(zone, onFiles) {
-  const input = zone.querySelector('input');
-  input.addEventListener('change', () => { onFiles([...input.files]); input.value = ''; });
-  zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('over'); });
-  zone.addEventListener('dragleave', () => zone.classList.remove('over'));
-  zone.addEventListener('drop', e => {
-    e.preventDefault(); zone.classList.remove('over');
-    if (e.dataTransfer.files.length) onFiles([...e.dataTransfer.files]);
-  });
+function bindPicker(input, onFiles) {
+  input.addEventListener('change', () => { if (input.files.length) onFiles([...input.files]); input.value = ''; });
 }
 
 // ---------------------------------------------------------------------------
-// Onglets, installation, service worker
+// Onglets, installation, service worker, dépôt global
 // ---------------------------------------------------------------------------
 let activeTab = 'conv';
 function showTab(name) {
   activeTab = name;
-  $$('.tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+  $$('.tabs button').forEach(b => { const on = b.dataset.tab === name; b.classList.toggle('active', on); b.setAttribute('aria-selected', on); });
   $$('.tab').forEach(s => s.classList.toggle('active', s.id === 'tab-' + name));
-  if (name === 'edit' && ed.cropper) setTimeout(() => ed.cropper.resize?.(), 50);
+  if (name === 'edit' && ed.cropper) setTimeout(() => fitView(), 60);
+  localStorage.setItem('pb-tab', name);
 }
 $$('.tabs button').forEach(b => b.addEventListener('click', () => showTab(b.dataset.tab)));
 $$('[data-close]').forEach(b => b.addEventListener('click', () => {
@@ -554,11 +572,12 @@ $$('[data-close]').forEach(b => b.addEventListener('click', () => {
 }));
 
 document.title = APP_NAME;
-$('.top h1').textContent = APP_NAME;
-$('#appVersion').textContent = 'Version ' + APP_VERSION;
+$('.brand-name').textContent = APP_NAME;
+$('#appVersion').textContent = APP_VERSION;
 
 let installEvt;
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; $('#btnInstall').hidden = false; });
+window.addEventListener('appinstalled', () => { $('#btnInstall').hidden = true; toast('PhotoBoîte est installée.'); });
 $('#btnInstall').addEventListener('click', async () => {
   if (!installEvt) return;
   installEvt.prompt();
@@ -574,81 +593,201 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     reg.addEventListener('updatefound', () => {
       const w = reg.installing;
       w?.addEventListener('statechange', () => {
-        if (w.state === 'installed' && navigator.serviceWorker.controller) toast('Nouvelle version disponible : rechargez la page.', 6000);
+        if (w.state === 'installed' && navigator.serviceWorker.controller) toast('Nouvelle version disponible : rechargez la page.', { ms: 8000 });
       });
     });
   }).catch(e => console.warn('Service worker', e));
 }
+
+function routeFiles(files) {
+  files = files.filter(f => fileKind(f));
+  if (!files.length) return toast('Type de fichier non pris en charge.', { error: true });
+  if (activeTab === 'edit') openInEditor(files[0]);
+  else if (activeTab === 'tags') addTagFiles(files);
+  else addConvFiles(files);
+}
+
+// Glisser-déposer n'importe où dans la fenêtre
+let dragDepth = 0;
+const hasFiles = e => [...(e.dataTransfer?.types || [])].includes('Files');
+document.addEventListener('dragenter', e => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth++; $('#dropOverlay').hidden = false; });
+document.addEventListener('dragover', e => { if (hasFiles(e)) e.preventDefault(); });
+document.addEventListener('dragleave', e => { if (!hasFiles(e)) return; if (--dragDepth <= 0) { dragDepth = 0; $('#dropOverlay').hidden = true; } });
+document.addEventListener('drop', e => {
+  if (!hasFiles(e)) return;
+  e.preventDefault();
+  dragDepth = 0;
+  $('#dropOverlay').hidden = true;
+  routeFiles([...e.dataTransfer.files]);
+});
 
 // Fichiers ouverts depuis Windows (« Ouvrir avec ») quand l'application est installée.
 if ('launchQueue' in window) {
   window.launchQueue.setConsumer(async p => {
     if (!p.files?.length) return;
     const files = await Promise.all(p.files.map(h => h.getFile()));
-    showTab('conv');
-    addConvFiles(files);
+    if (files.length === 1 && fileKind(files[0]) !== 'pdf') { showTab('edit'); openInEditor(files[0]); }
+    else { showTab('conv'); addConvFiles(files); }
   });
 }
 
 // Coller une image (Ctrl+V)
 document.addEventListener('paste', e => {
+  if (e.target.matches('input, textarea')) return;
   const files = [...(e.clipboardData?.files || [])].filter(f => fileKind(f));
-  if (!files.length || e.target.matches('input[type=text], input[type=number]')) return;
-  const named = files.map((f, i) => new File([f], f.name && f.name !== 'image.png' ? f.name : `collage-${i + 1}.png`, { type: f.type }));
-  if (activeTab === 'edit') openInEditor(named[0]);
-  else if (activeTab === 'tags') addTagFiles(named);
-  else addConvFiles(named);
+  if (!files.length) return;
+  routeFiles(files.map((f, i) => new File([f], f.name && f.name !== 'image.png' ? f.name : `collage-${i + 1}.png`, { type: f.type })));
 });
+
+// Mémorisation des réglages
+const SAVED = ['quality', 'whiteBg', 'keepExif', 'pdfGroup', 'pdfPage', 'pdfDpi', 'resizeMode', 'maxW', 'maxH', 'pct'];
+function saveSettings() {
+  const s = { fmt: $('input[name=fmt]:checked').value, edfmt: $('input[name=edfmt]:checked').value };
+  for (const id of SAVED) { const e = $('#' + id); s[id] = e.type === 'checkbox' ? e.checked : e.value; }
+  localStorage.setItem('pb-settings', JSON.stringify(s));
+}
+function loadSettings() {
+  let s;
+  try { s = JSON.parse(localStorage.getItem('pb-settings') || 'null'); } catch (e) { s = null; }
+  if (!s) return;
+  for (const id of SAVED) {
+    const e = $('#' + id);
+    if (e && id in s) { if (e.type === 'checkbox') e.checked = !!s[id]; else e.value = s[id]; }
+  }
+  const f = $(`input[name=fmt][value="${s.fmt}"]`); if (f) f.checked = true;
+  const g = $(`input[name=edfmt][value="${s.edfmt}"]`); if (g) g.checked = true;
+}
 
 // ---------------------------------------------------------------------------
 // Onglet CONVERTIR
 // ---------------------------------------------------------------------------
-let convFiles = [];
+let convFiles = []; // { file, pages }
+
+const FMT_HELP = {
+  png: 'Sans perte, gère la transparence. Idéal pour les captures et les pages de PDF.',
+  jpeg: 'Le plus compatible et le plus léger pour les photos.',
+  webp: 'Très léger, lu par tous les navigateurs récents.',
+  gif: 'Limité à 256 couleurs. Pour les logos et images simples.',
+  bmp: 'Format Windows non compressé : fichiers volumineux.',
+  pdf: 'Assemble les images (et pages de PDF) en document.',
+};
 
 function renderConvList() {
   const box = $('#convList');
   box.innerHTML = '';
-  convFiles.forEach((f, idx) => {
-    const row = document.createElement('div');
-    row.className = 'file';
-    const kind = fileKind(f);
-    const th = kind === 'image' && !/\.tiff?$/i.test(f.name) ? thumbFor(f) : thumbFor(null, kind === 'pdf' ? 'PDF' : f.name.split('.').pop().toUpperCase().slice(0, 4));
-    const up = button('↑', 'x', () => { if (idx) { [convFiles[idx - 1], convFiles[idx]] = [convFiles[idx], convFiles[idx - 1]]; renderConvList(); } });
-    up.title = 'Monter';
-    const x = button('×', 'x', () => { convFiles.splice(idx, 1); renderConvList(); });
-    x.title = 'Retirer';
-    row.append(th, span('name', f.name), span('meta', fmtSize(f.size)), up, x);
-    box.append(row);
+  convFiles.forEach((it, idx) => {
+    const f = it.file, kind = fileKind(f);
+    const meta = fmtSize(f.size) + (it.pages ? ` · ${plural(it.pages, 'page', 'pages')}` : '');
+    const actions = [];
+    actions.push(iconButton('edit', 'Retoucher', () => { showTab('edit'); openInEditor(f); }));
+    if (idx) actions.push(iconButton('up', 'Placer avant', () => { [convFiles[idx - 1], convFiles[idx]] = [convFiles[idx], convFiles[idx - 1]]; renderConvList(); }));
+    actions.push(iconButton('x', 'Retirer', () => { convFiles.splice(idx, 1); renderConvList(); }));
+    const previewable = kind === 'image' && !/\.tiff?$/i.test(f.name);
+    box.append(tile({ blob: previewable ? f : null, name: f.name, meta, tag: kind === 'pdf' ? 'PDF' : extOf(f.name), actions }));
   });
-  $('#convListActions').hidden = convFiles.length < 2;
-  $('#btnConvert').disabled = !convFiles.length;
+  if (convFiles.length) {
+    const input = el('input', { type: 'file', multiple: true, accept: 'image/*,.heic,.heif,.pdf,application/pdf' });
+    bindPicker(input, addConvFiles);
+    box.append(el('label', { class: 'tile add' }, input, el('div', {}, svgIcon('plus'), el('span', { text: 'Ajouter' }))));
+  }
+  const n = convFiles.length;
+  $('#tab-conv .work-main').classList.toggle('has-files', n > 0);
+  $('#convListActions').hidden = !n;
+  const pdfs = convFiles.filter(it => fileKind(it.file) === 'pdf');
+  const pages = pdfs.reduce((s, it) => s + (it.pages || 0), 0);
+  const size = convFiles.reduce((s, it) => s + it.file.size, 0);
+  $('#convSummary').textContent = n
+    ? [plural(n, 'fichier', 'fichiers'), pdfs.length ? `dont ${plural(pdfs.length, 'PDF', 'PDF')}${pages ? ` (${plural(pages, 'page', 'pages')})` : ''}` : '', fmtSize(size)].filter(Boolean).join(' · ')
+    : '';
+  $('#pdfInOpts').hidden = !pdfs.length;
+  updateConvButton();
 }
 
 function addConvFiles(files) {
   const ok = files.filter(f => fileKind(f));
   const ko = files.length - ok.length;
-  convFiles.push(...ok);
+  for (const file of ok) {
+    const it = { file, pages: 0 };
+    convFiles.push(it);
+    if (fileKind(file) === 'pdf') countPages(it);
+  }
   renderConvList();
-  if (ko) toast(`${ko} fichier(s) ignoré(s) : type non pris en charge.`);
+  $('#convResults').innerHTML = '';
+  if (ko) toast(`${plural(ko, 'fichier ignoré', 'fichiers ignorés')} : type non pris en charge.`, { error: true });
 }
 
-setupDrop($('#dropConv'), addConvFiles);
+async function countPages(it) {
+  try {
+    const pdfjs = await getPdfjs();
+    const doc = await pdfjs.getDocument({ data: new Uint8Array(await it.file.arrayBuffer()), isEvalSupported: false }).promise;
+    it.pages = doc.numPages;
+    doc.destroy();
+    renderConvList();
+  } catch (e) { /* signalé à la conversion */ }
+}
+
+bindPicker($('#inConv'), addConvFiles);
+bindPicker($('#inConvMore'), addConvFiles);
 $('#convClear').onclick = () => { convFiles = []; renderConvList(); $('#convResults').innerHTML = ''; };
 $('#convSort').onclick = () => {
-  convFiles.sort((a, b) => a.name.localeCompare(b.name, 'fr', { numeric: true }));
+  convFiles.sort((a, b) => a.file.name.localeCompare(b.file.name, 'fr', { numeric: true }));
   renderConvList();
 };
 
+function updateConvButton() {
+  const fmt = $('input[name=fmt]:checked').value;
+  const n = convFiles.length, btn = $('#btnConvert');
+  btn.disabled = !n || btn.dataset.busy === '1';
+  if (btn.dataset.busy === '1') return;
+  if (!n) btn.textContent = 'Ajoutez des fichiers';
+  else if (fmt === 'pdf' && $('#pdfGroup').value === 'one' && n > 1) btn.textContent = `Réunir ${n} fichiers en un PDF`;
+  else btn.textContent = `Convertir ${plural(n, 'fichier', 'fichiers')} en ${FMT_LABEL[fmt]}`;
+}
+
 function refreshConvOptions() {
   const fmt = $('input[name=fmt]:checked').value;
-  $$('#tab-conv [data-show]').forEach(el => { el.hidden = !el.dataset.show.split(' ').includes(fmt); });
+  $$('#tab-conv [data-show]').forEach(e => { e.hidden = !e.dataset.show.split(' ').includes(fmt); });
   const rm = $('#resizeMode').value;
-  $$('#tab-conv [data-resize]').forEach(el => { el.hidden = el.dataset.resize !== rm; });
+  $$('#tab-conv [data-resize]').forEach(e => { e.hidden = e.dataset.resize !== rm; });
+  $('#fmtHelp').textContent = FMT_HELP[fmt];
+  $('#qOut').textContent = $('#quality').value + ' %';
+  const pages = $('#pdfPages').value.trim();
+  $('#pdfInBadge').textContent = `${$('#pdfDpi').value} dpi · ${pages ? 'p. ' + pages : 'toutes'}`;
+  const parts = [];
+  if (rm === 'fit' && (+$('#maxW').value || +$('#maxH').value)) parts.push(`max ${$('#maxW').value || '…'}×${$('#maxH').value || '…'}`);
+  if (rm === 'percent') parts.push($('#pct').value + ' %');
+  if (+$('#rot').value) parts.push($('#rot').value + '°');
+  if ($('#flipH').checked || $('#flipV').checked) parts.push('miroir');
+  const tb = $('#transBadge');
+  tb.textContent = parts.length ? parts.join(', ') : 'Inchangées';
+  tb.classList.toggle('on', parts.length > 0);
+  updateConvButton();
 }
-$$('input[name=fmt]').forEach(r => r.addEventListener('change', refreshConvOptions));
-$('#resizeMode').addEventListener('change', refreshConvOptions);
-$('#quality').addEventListener('input', () => { $('#qOut').textContent = $('#quality').value; });
-refreshConvOptions();
+$$('#tab-conv .panel input, #tab-conv .panel select').forEach(e => {
+  e.addEventListener('input', () => { refreshConvOptions(); saveSettings(); });
+  e.addEventListener('change', () => { refreshConvOptions(); saveSettings(); $$('.preset-btn').forEach(b => b.classList.remove('on')); });
+});
+
+const PRESETS = {
+  png: { fmt: 'png', whiteBg: true, resizeMode: 'none' },
+  pdfA4: { fmt: 'pdf', pdfGroup: 'one', pdfPage: 'a4', resizeMode: 'none' },
+  web: { fmt: 'jpeg', quality: 85, keepExif: true, resizeMode: 'fit', maxW: 1920, maxH: 1920 },
+  mail: { fmt: 'jpeg', quality: 80, keepExif: false, resizeMode: 'fit', maxW: 1280, maxH: 1280 },
+};
+$$('.preset-btn').forEach(b => b.addEventListener('click', () => {
+  const p = PRESETS[b.dataset.preset];
+  for (const [k, v] of Object.entries(p)) {
+    if (k === 'fmt') { $(`input[name=fmt][value=${v}]`).checked = true; continue; }
+    const e = $('#' + k);
+    if (e.type === 'checkbox') e.checked = v; else e.value = v;
+  }
+  $('#rot').value = '0'; $('#flipH').checked = false; $('#flipV').checked = false;
+  if (p.resizeMode !== 'none') $('#transOpts').open = true;
+  refreshConvOptions();
+  saveSettings();
+  $$('.preset-btn').forEach(x => x.classList.toggle('on', x === b));
+  toast('Préréglage appliqué : ' + b.querySelector('b').textContent);
+}));
 
 function batchTransform(c, t) {
   if (t.resize === 'fit' && (t.maxW || t.maxH)) {
@@ -676,79 +815,94 @@ $('#btnConvert').addEventListener('click', async () => {
   };
   const pdfOpts = { dpi: +$('#pdfDpi').value, pages: $('#pdfPages').value, transparent: !opts.whiteBg && fmt !== 'pdf' };
   const group = $('#pdfGroup').value, pageMode = $('#pdfPage').value;
+  const list = convFiles.map(it => it.file);
 
   const btn = $('#btnConvert'), prog = $('#convProgress');
-  btn.disabled = true;
-  const items = [], errors = [], uniq = uniqueNamer();
-  let notes = new Set();
-  let shared = fmt === 'pdf' && group === 'one' && convFiles.length > 1 ? new PdfBuilder(pageMode) : null;
+  btn.dataset.busy = '1'; btn.disabled = true; btn.textContent = 'Conversion en cours…';
+  const items = [], errors = [], uniq = uniqueNamer(), notes = new Set();
+  const shared = fmt === 'pdf' && group === 'one' && list.length > 1 ? new PdfBuilder(pageMode) : null;
+  const t0 = performance.now();
   try {
-    for (let i = 0; i < convFiles.length; i++) {
-      const f = convFiles[i];
-      setProgress(prog, i, convFiles.length, `${i + 1} / ${convFiles.length} : ${f.name}`);
+    for (let i = 0; i < list.length; i++) {
+      const f = list[i];
+      setProgress(prog, i, list.length, `${i + 1} / ${list.length} · ${f.name}`);
       await nextFrame();
       const own = fmt === 'pdf' && !shared ? new PdfBuilder(pageMode) : null;
       try {
         for await (const it of decodeFile(f, pdfOpts)) {
-          if (it.canvas._scaled) notes.add(`${f.name} a été réduite (limite de taille de ${isIOS ? 'l’iPhone' : 'ce navigateur'}).`);
+          if (it.canvas._scaled) notes.add(`${f.name} a été réduite (taille maximale gérée par ${isIOS ? 'l’iPhone ou l’iPad' : 'ce navigateur'}).`);
           const c = batchTransform(it.canvas, t);
           if (fmt === 'pdf') { await (shared || own).add(c); continue; }
           let blob = await encode(c, fmt, opts);
           if (fmt === 'jpeg' && opts.keepExif && it.exif) blob = await withExif(blob, it.exif, c.width, c.height);
-          items.push({ name: uniq(it.name + EXT[fmt]), blob });
+          items.push({ name: uniq(it.name + EXT[fmt]), blob, note: `${c.width}×${c.height}` });
           await nextFrame();
         }
-        if (own) items.push({ name: uniq(baseName(f.name) + '.pdf'), blob: await own.blob() });
+        if (own) items.push({ name: uniq(baseName(f.name) + '.pdf'), blob: await own.blob(), note: plural(own.count, 'page', 'pages') });
       } catch (e) {
         console.error(e);
         errors.push(`${f.name} : ${e.message || e}`);
       }
     }
-    if (shared && shared.count) items.push({ name: uniq((convFiles.length === 1 ? baseName(convFiles[0].name) : 'Images') + '.pdf'), blob: await shared.blob() });
+    if (shared && shared.count) items.push({ name: uniq((list.length === 1 ? baseName(list[0].name) : 'Images') + '.pdf'), blob: await shared.blob(), note: plural(shared.count, 'page', 'pages') });
   } finally {
-    btn.disabled = false;
+    delete btn.dataset.busy;
     prog.hidden = true;
+    updateConvButton();
   }
-  showResults($('#convResults'), items, [...errors, ...notes], `${items.length} fichier(s) créé(s)`);
+  const secs = ((performance.now() - t0) / 1000).toFixed(1).replace('.', ',');
+  showResults($('#convResults'), items, [...errors, ...notes], items.length ? `Conversion terminée en ${secs} s` : 'Conversion impossible');
   if (items.length === 1 && !errors.length) download(items[0].blob, items[0].name);
 });
 
 // ---------------------------------------------------------------------------
 // Onglet RETOUCHER
 // ---------------------------------------------------------------------------
-const ed = { canvas: null, history: [], name: 'image', exif: null, cropper: null, mode: 'free', url: null };
+const ed = { canvas: null, history: [], future: [], name: 'image', exif: null, cropper: null, mode: 'crop', url: null };
 const ID_RATIO = 35 / 45;
 
 async function openInEditor(file) {
   if (!file) return;
-  const kind = fileKind(file);
-  if (!kind) return toast('Type de fichier non pris en charge.');
+  if (!fileKind(file)) return toast('Type de fichier non pris en charge.', { error: true });
   try {
-    toast('Ouverture…', 1500);
+    toast('Ouverture de ' + file.name + '…', { ms: 1500 });
     let first;
     for await (const it of decodeFile(file, { dpi: 150, pages: '1' })) { first = it; break; }
-    ed.history = [];
+    ed.history = []; ed.future = [];
     ed.name = baseName(file.name);
     ed.exif = first.exif;
     $('#edKeepExif').closest('label').hidden = !ed.exif;
+    $('#editEmpty').hidden = true;
     $('#editor').hidden = false;
     $('#edResults').innerHTML = '';
-    setWorking(first.canvas, false);
-    if (first.canvas._scaled) toast('Image réduite : elle dépassait la taille maximale gérée par cet appareil.', 5000);
+    $('#edName').textContent = file.name;
+    await setWorking(first.canvas, false);
+    if (first.canvas._scaled) toast('Image réduite : elle dépassait la taille maximale gérée par cet appareil.', { ms: 5000 });
   } catch (e) {
     console.error(e);
-    toast(`Impossible d'ouvrir ${file.name} : ${e.message}`, 5000);
+    toast(`Impossible d'ouvrir ${file.name} : ${e.message}`, { ms: 5000, error: true });
   }
 }
-setupDrop($('#dropEdit'), files => openInEditor(files[0]));
+bindPicker($('#inEdit'), f => openInEditor(f[0]));
+bindPicker($('#inEdit2'), f => openInEditor(f[0]));
+
+function updateHistoryButtons() {
+  $('#edUndo').disabled = !ed.history.length;
+  $('#edRedo').disabled = !ed.future.length;
+}
 
 async function setWorking(canvas, push = true) {
-  if (push && ed.canvas) { ed.history.push(ed.canvas); if (ed.history.length > 12) ed.history.shift(); }
+  if (push && ed.canvas) {
+    ed.history.push(ed.canvas);
+    if (ed.history.length > 15) ed.history.shift();
+    ed.future = [];
+  }
   ed.canvas = canvas;
-  $('#edUndo').disabled = !ed.history.length;
+  updateHistoryButtons();
   $('#edInfo').textContent = `${canvas.width} × ${canvas.height} px`;
+  $('#edSizeBadge').textContent = `${canvas.width} × ${canvas.height}`;
   $('#edW').value = canvas.width; $('#edH').value = canvas.height;
-  $('#straight').value = 0; $('#straightOut').textContent = '0';
+  $('#straight').value = 0; $('#straightOut').textContent = '0°';
   // Aperçu affiché (JPEG si opaque : beaucoup plus rapide à produire)
   const blob = hasAlpha(canvas) ? await canvasToBlob(canvas, 'image/png') : await canvasToBlob(canvas, 'image/jpeg', 0.92);
   if (ed.url) URL.revokeObjectURL(ed.url);
@@ -759,29 +913,48 @@ async function setWorking(canvas, push = true) {
     img.src = ed.url;
     ed.cropper = new window.Cropper(img, {
       viewMode: 1, autoCropArea: 1, background: false, responsive: true, restore: false,
-      zoomOnWheel: false, toggleDragModeOnDblclick: false,
-      ready() { applyRatio(); },
+      zoomOnWheel: true, wheelZoomRatio: 0.08, toggleDragModeOnDblclick: false, dragMode: 'move',
+      ready() { applyRatio(); updateCropInfo(); },
+      crop() { updateCropInfo(); },
     });
   }
 }
 
+function updateCropInfo() {
+  if (!ed.cropper || !ed.canvas) return;
+  const d = ed.cropper.getData(true);
+  if (!d.width) return;
+  const full = Math.abs(d.width - ed.canvas.width) < 2 && Math.abs(d.height - ed.canvas.height) < 2 && !d.rotate;
+  $('#edCropInfo').textContent = full ? 'Image entière' : `Cadre : ${d.width} × ${d.height} px`;
+}
+
 function currentRatio() {
+  if (ed.mode === 'id') return ID_RATIO;
+  if (ed.mode === 'polaroid') return 1;
   const v = $('input[name=ratio]:checked').value;
-  if (v === 'free') return NaN;
-  if (v === 'id') return ID_RATIO;
-  if (v === 'polaroid') return 1;
-  return +v;
+  return v === 'free' ? NaN : +v;
 }
 
 function applyRatio() {
   if (!ed.cropper) return;
-  const v = $('input[name=ratio]:checked').value;
-  ed.mode = v;
-  $('#panelId').hidden = v !== 'id';
-  $('#panelPola').hidden = v !== 'polaroid';
   ed.cropper.setAspectRatio(currentRatio());
+  if (ed.mode !== 'crop') {
+    // cadre centré occupant le maximum de l'image
+    const img = ed.cropper.getImageData(), r = currentRatio();
+    let w = img.width, h = w / r;
+    if (h > img.height) { h = img.height; w = h * r; }
+    const cv = ed.cropper.getCanvasData();
+    ed.cropper.setCropBoxData({ left: cv.left + (cv.width - w) / 2, top: cv.top + (cv.height - h) / 2, width: w, height: h });
+  }
   drawGuide();
 }
+function setMode(mode) {
+  ed.mode = mode;
+  $$('#tab-edit [data-mode]').forEach(s => { s.hidden = s.dataset.mode !== mode; });
+  $('#edSave').closest('.panel-section').hidden = mode !== 'crop';
+  applyRatio();
+}
+$$('input[name=edmode]').forEach(r => r.addEventListener('change', () => setMode(r.value)));
 $$('input[name=ratio]').forEach(r => r.addEventListener('change', applyRatio));
 
 // Repères visage pour la photo d'identité (norme : tête de 32 à 36 mm sur 45 mm).
@@ -796,12 +969,12 @@ function drawGuide() {
   svg.setAttribute('viewBox', '0 0 35 45');
   svg.setAttribute('preserveAspectRatio', 'none');
   svg.innerHTML = `
-    <rect x="0" y="3" width="35" height="3" fill="rgba(90,163,58,.25)"/>
-    <rect x="0" y="38" width="35" height="3" fill="rgba(90,163,58,.25)"/>
-    <ellipse cx="17.5" cy="22" rx="10.5" ry="17" fill="none" stroke="#fff" stroke-width=".35" stroke-dasharray="1 .6"/>
-    <line x1="17.5" y1="0" x2="17.5" y2="45" stroke="rgba(255,255,255,.5)" stroke-width=".15"/>
-    <text x="1" y="5.3" font-size="1.8" fill="#fff">haut du crâne</text>
-    <text x="1" y="40.3" font-size="1.8" fill="#fff">menton</text>`;
+    <rect x="0" y="3" width="35" height="3" fill="rgba(34,197,94,.28)"/>
+    <rect x="0" y="38" width="35" height="3" fill="rgba(34,197,94,.28)"/>
+    <ellipse cx="17.5" cy="22" rx="10.5" ry="17" fill="none" stroke="#fff" stroke-width=".3" stroke-dasharray="1 .7"/>
+    <line x1="17.5" y1="0" x2="17.5" y2="45" stroke="rgba(255,255,255,.45)" stroke-width=".12"/>
+    <text x="1" y="5.1" font-size="1.5" fill="#fff" font-family="system-ui,sans-serif">haut du crâne</text>
+    <text x="1" y="40.1" font-size="1.5" fill="#fff" font-family="system-ui,sans-serif">menton</text>`;
   box.appendChild(svg);
 }
 
@@ -814,23 +987,44 @@ function framed() {
   return c;
 }
 
-$('#edUndo').onclick = () => {
+function fitView() {
+  const cr = ed.cropper;
+  if (!cr || !cr.ready) return;
+  const box = cr.getContainerData(), img = cr.getImageData();
+  const k = Math.min(box.width / img.naturalWidth, box.height / img.naturalHeight);
+  cr.zoomTo(k);
+  const cv = cr.getCanvasData();
+  cr.setCanvasData({ left: (box.width - cv.width) / 2, top: (box.height - cv.height) / 2 });
+}
+
+function undo() {
   if (!ed.history.length) return;
+  ed.future.push(ed.canvas);
   const prev = ed.history.pop();
-  ed.canvas = null;
   setWorking(prev, false);
-};
+}
+function redo() {
+  if (!ed.future.length) return;
+  ed.history.push(ed.canvas);
+  setWorking(ed.future.pop(), false);
+}
+$('#edUndo').onclick = undo;
+$('#edRedo').onclick = redo;
 $('#edRotL').onclick = () => ed.canvas && setWorking(rotate90(ed.canvas, 270));
 $('#edRotR').onclick = () => ed.canvas && setWorking(rotate90(ed.canvas, 90));
 $('#edFlipH').onclick = () => ed.canvas && setWorking(flip(ed.canvas, true, false));
 $('#edFlipV').onclick = () => ed.canvas && setWorking(flip(ed.canvas, false, true));
+$('#edZoomIn').onclick = () => ed.cropper?.zoom(0.15);
+$('#edZoomOut').onclick = () => ed.cropper?.zoom(-0.15);
+$('#edFit').onclick = fitView;
+
 $('#straight').addEventListener('input', () => {
   const v = +$('#straight').value;
-  $('#straightOut').textContent = String(v).replace('.', ',');
+  $('#straightOut').textContent = String(v).replace('.', ',') + '°';
   if (!ed.cropper) return;
   ed.cropper.rotateTo(v);
   // En mode libre, on cadre automatiquement le plus grand rectangle sans coins blancs.
-  if (ed.mode === 'free' && ed.canvas) {
+  if (ed.mode === 'crop' && isNaN(currentRatio()) && ed.canvas) {
     const w = ed.canvas.width, h = ed.canvas.height, r = Math.abs(v) * Math.PI / 180;
     const cos = Math.cos(r), sin = Math.sin(r);
     const k = Math.min(w / (w * cos + h * sin), h / (w * sin + h * cos));
@@ -838,14 +1032,20 @@ $('#straight').addEventListener('input', () => {
     ed.cropper.setData({ x: (W - k * w) / 2, y: (H - k * h) / 2, width: k * w, height: k * h });
   }
 });
-$('#edCrop').onclick = () => ed.canvas && setWorking(framed());
+$('#edCrop').onclick = () => { if (ed.canvas) { setWorking(framed()); toast('Cadre appliqué.'); } };
 $('#edResetBox').onclick = () => {
   if (!ed.cropper) return;
-  $('#straight').value = 0; $('#straightOut').textContent = '0';
+  $('#straight').value = 0; $('#straightOut').textContent = '0°';
   ed.cropper.rotateTo(0);
   ed.cropper.reset();
+  applyRatio();
 };
 
+$('#edLockBtn').onclick = () => {
+  const on = !$('#edLock').checked;
+  $('#edLock').checked = on;
+  $('#edLockBtn').setAttribute('aria-pressed', on);
+};
 $('#edW').addEventListener('input', () => {
   if ($('#edLock').checked && ed.canvas) $('#edH').value = Math.max(1, Math.round(+$('#edW').value * ed.canvas.height / ed.canvas.width));
 });
@@ -854,49 +1054,46 @@ $('#edH').addEventListener('input', () => {
 });
 $('#edResize').onclick = () => {
   const w = +$('#edW').value, h = +$('#edH').value;
-  if (!ed.canvas || !(w > 0 && h > 0)) return toast('Indiquez une largeur et une hauteur.');
+  if (!ed.canvas || !(w > 0 && h > 0)) return toast('Indiquez une largeur et une hauteur.', { error: true });
   const cap = capSize(w, h);
   if (cap.scaled) toast('Taille limitée par cet appareil.');
   setWorking(resizeCanvas(ed.canvas, cap.w, cap.h));
 };
 
-function edDeliver(items, title) {
-  showResults($('#edResults'), items, [], title);
+$$('input[name=edfmt]').forEach(r => r.addEventListener('change', saveSettings));
+
+function deliver(item, title) {
+  showResults($('#edResults'), [item], [], title);
+  download(item.blob, item.name);
 }
 
-$('#edSave').onclick = async () => {
-  if (!ed.canvas) return;
-  const fmt = $('input[name=edfmt]:checked').value;
-  const btn = $('#edSave');
+async function busy(btn, fn) {
   btn.disabled = true;
-  try {
-    const c = framed();
-    let blob;
-    if (fmt === 'pdf') { const b = new PdfBuilder('image'); await b.add(c); blob = await b.blob(); }
-    else {
-      blob = await encode(c, fmt, { quality: 0.92, whiteBg: false });
-      if (fmt === 'jpeg' && ed.exif && $('#edKeepExif').checked) blob = await withExif(blob, ed.exif, c.width, c.height);
-    }
-    const item = { name: ed.name + ' - retouche' + EXT[fmt], blob, note: `${c.width} × ${c.height} px` };
-    edDeliver([item], 'Image enregistrée');
-    download(item.blob, item.name);
-  } catch (e) {
-    toast('Erreur : ' + e.message, 5000);
-  } finally { btn.disabled = false; }
-};
+  try { await fn(); }
+  catch (e) { console.error(e); toast('Erreur : ' + e.message, { ms: 5000, error: true }); }
+  finally { btn.disabled = false; }
+}
+
+$('#edSave').onclick = () => ed.canvas && busy($('#edSave'), async () => {
+  const fmt = $('input[name=edfmt]:checked').value;
+  const c = framed();
+  let blob;
+  if (fmt === 'pdf') { const b = new PdfBuilder('image'); await b.add(c); blob = await b.blob(); }
+  else {
+    blob = await encode(c, fmt, { quality: 0.92, whiteBg: false });
+    if (fmt === 'jpeg' && ed.exif && $('#edKeepExif').checked) blob = await withExif(blob, ed.exif, c.width, c.height);
+  }
+  deliver({ name: ed.name + ' - retouche' + EXT[fmt], blob, note: `${c.width}×${c.height}` }, 'Image enregistrée');
+});
 
 // --- Photo d'identité : 35 × 45 mm à 300 dpi = 413 × 531 px
 const MM = 300 / 25.4;
-$('#idSingle').onclick = async () => {
-  if (!ed.canvas) return;
+$('#idSingle').onclick = () => ed.canvas && busy($('#idSingle'), async () => {
   const photo = resizeCanvas(framed(), 413, 531);
   const blob = await encode(photo, 'jpeg', { quality: 0.95, dpi: 300 });
-  const item = { name: ed.name + ' - identite 35x45.jpg', blob, note: '35 × 45 mm, 300 dpi' };
-  edDeliver([item], "Photo d'identité");
-  download(item.blob, item.name);
-};
-$('#idSheet').onclick = async () => {
-  if (!ed.canvas) return;
+  deliver({ name: ed.name + ' - identite 35x45.jpg', blob, note: '35×45 mm' }, "Photo d'identité prête");
+});
+$('#idSheet').onclick = () => ed.canvas && busy($('#idSheet'), async () => {
   const photo = resizeCanvas(framed(), 413, 531);
   const W = Math.round(100 * MM), H = Math.round(150 * MM);   // 10 × 15 cm
   const sheet = makeCanvas(W, H);
@@ -910,21 +1107,18 @@ $('#idSheet').onclick = async () => {
     g.strokeRect(x - .5, y - .5, 414, 532);
   }
   const blob = await encode(sheet, 'jpeg', { quality: 0.95, dpi: 300 });
-  const item = { name: ed.name + ' - planche identite 10x15.jpg', blob, note: 'à imprimer en 10 × 15 cm, sans marge ni ajustement' };
-  edDeliver([item], 'Planche de photos d’identité');
-  download(item.blob, item.name);
-};
+  deliver({ name: ed.name + ' - planche identite 10x15.jpg', blob, note: 'tirage 10×15 sans marge' }, 'Planche prête à imprimer');
+});
 
 // --- Polaroid : image 79 × 79 mm, cadre 88 × 107 mm (300 dpi)
-$('#polaMake').onclick = async () => {
-  if (!ed.canvas) return;
+$('#polaMake').onclick = () => ed.canvas && busy($('#polaMake'), async () => {
   const side = Math.round(79 * MM);
   const img = resizeCanvas(framed(), side, side);
   const W = Math.round(88 * MM), H = Math.round(107 * MM);
   const left = Math.round((W - side) / 2), top = Math.round(6 * MM);
   const c = makeCanvas(W, H);
   const g = ctx2d(c);
-  const color = $('#polaColor').value;
+  const color = $('input[name=polaColor]:checked').value;
   g.fillStyle = color; g.fillRect(0, 0, W, H);
   g.drawImage(img, left, top);
   const text = $('#polaText').value.trim();
@@ -938,10 +1132,24 @@ $('#polaMake').onclick = async () => {
     g.fillText(text, W / 2, top + side + (H - top - side) / 2);
   }
   const blob = await encode(c, 'jpeg', { quality: 0.95, dpi: 300 });
-  const item = { name: ed.name + ' - polaroid.jpg', blob, note: '88 × 107 mm, 300 dpi' };
-  edDeliver([item], 'Polaroid');
-  download(item.blob, item.name);
-};
+  deliver({ name: ed.name + ' - polaroid.jpg', blob, note: '88×107 mm' }, 'Polaroid prêt');
+});
+
+// Raccourcis clavier
+document.addEventListener('keydown', e => {
+  const mod = e.ctrlKey || e.metaKey;
+  if (!mod) return;
+  const k = e.key.toLowerCase();
+  if (k === 'o') {
+    e.preventDefault();
+    ({ conv: $('#inConv'), edit: $('#inEdit'), tags: $('#inTags') })[activeTab].click();
+    return;
+  }
+  if (activeTab !== 'edit' || !ed.canvas || e.target.matches('input[type=text], input[type=number]')) return;
+  if (k === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
+  else if (k === 'y' || (k === 'z' && e.shiftKey)) { e.preventDefault(); redo(); }
+  else if (k === 's') { e.preventDefault(); if (ed.mode === 'crop') $('#edSave').click(); else if (ed.mode === 'id') $('#idSingle').click(); else $('#polaMake').click(); }
+});
 
 // ---------------------------------------------------------------------------
 // Onglet TAGS (EXIF par lot)
@@ -951,7 +1159,7 @@ const I = piexif.ImageIFD, X = piexif.ExifIFD, G = piexif.GPSIFD;
 
 const utf8Enc = s => unescape(encodeURIComponent(s));
 const utf8Dec = s => { try { return decodeURIComponent(escape(s)); } catch (e) { return s; } };
-const clean = s => (s || '').replace(/\0+$/, '').trim();
+const clean = s => (typeof s === 'string' ? s : '').replace(/\0+$/, '').trim();
 function xpEnc(s) { const a = []; for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); a.push(c & 255, c >> 8); } a.push(0, 0); return a; }
 function xpDec(a) {
   if (!Array.isArray(a)) return '';
@@ -967,13 +1175,12 @@ function parseExifDate(s) {
 const showDate = s => { const d = parseExifDate(s); return d ? d.toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' }) : ''; };
 
 function summary(ex) {
-  if (!ex) return null;
   return {
     date: showDate(ex.Exif[X.DateTimeOriginal] || ex['0th'][I.DateTime]),
     title: xpDec(ex['0th'][I.XPTitle]) || utf8Dec(clean(ex['0th'][I.ImageDescription])),
     author: xpDec(ex['0th'][I.XPAuthor]) || utf8Dec(clean(ex['0th'][I.Artist])),
     camera: [clean(ex['0th'][I.Make]), clean(ex['0th'][I.Model])].filter(Boolean).join(' '),
-    gps: ex.GPS && ex.GPS[G.GPSLatitude] ? 'oui' : '',
+    gps: ex.GPS && ex.GPS[G.GPSLatitude] ? 'Oui' : '',
   };
 }
 
@@ -981,55 +1188,78 @@ function renderTagTable() {
   const tb = $('#tagsTable tbody');
   tb.innerHTML = '';
   tagFiles.forEach((t, idx) => {
-    const tr = document.createElement('tr');
-    const td = txt => { const c = document.createElement('td'); c.textContent = txt || ''; return c; };
-    tr.append(td(t.file.name));
-    if (t.error) { const c = td(t.error); c.colSpan = 5; c.className = 'err'; tr.append(c); }
+    const td = (txt, cls) => el('td', { text: txt || '—', class: cls });
+    const mini = el('td', {}, isJpeg(t.file) ? (() => {
+      const url = URL.createObjectURL(t.file);
+      const img = el('img', { class: 'mini', alt: '', loading: 'lazy', src: url });
+      img.addEventListener('load', () => URL.revokeObjectURL(url), { once: true });
+      return img;
+    })() : el('div', { class: 'mini' }));
+    const tr = el('tr', {}, mini, td(t.file.name, 'fname'));
+    if (t.error) { const c = td(t.error, 'err'); c.colSpan = 5; tr.append(c); }
     else { const s = summary(t.exif); tr.append(td(s.date), td(s.title), td(s.author), td(s.camera), td(s.gps)); }
-    const x = document.createElement('td');
-    x.append(button('×', 'btn ghost small', () => { tagFiles.splice(idx, 1); renderTagTable(); }));
-    tr.append(x);
+    const btn = el('button', { class: 'icon-btn', type: 'button', title: 'Retirer', 'aria-label': 'Retirer', onclick: () => { tagFiles.splice(idx, 1); renderTagTable(); } }, svgIcon('x'));
+    tr.append(el('td', {}, btn));
     tb.append(tr);
   });
-  $('#tagsTableWrap').hidden = !tagFiles.length;
-  $('#tagsForm').hidden = !tagFiles.length;
+  const n = tagFiles.length, ok = tagFiles.filter(t => t.exif).length;
+  $('#tab-tags .work-main').classList.toggle('has-files', n > 0);
+  $('#tagsTableWrap').hidden = !n;
+  $('#tagsListActions').hidden = !n;
+  const btn = $('#btnTags');
+  if (btn.dataset.busy !== '1') {
+    btn.disabled = !ok;
+    btn.textContent = ok ? `Appliquer à ${plural(ok, 'photo', 'photos')}` : (n ? 'Aucune photo modifiable' : 'Ajoutez des photos');
+  }
 }
 
 async function addTagFiles(files) {
   for (const file of files) {
     if (!isJpeg(file)) {
-      tagFiles.push({ file, error: 'Seuls les JPG peuvent être modifiés ici. Convertissez d’abord en JPG (onglet Convertir).' });
+      tagFiles.push({ file, error: 'Seuls les JPG sont modifiables. Convertissez d’abord en JPG (onglet Convertir).' });
       continue;
     }
     const ex = readExif(await file.arrayBuffer());
     tagFiles.push(ex ? { file, exif: ex } : { file, error: 'Métadonnées illisibles (fichier abîmé ?)' });
   }
+  $('#tagsResults').innerHTML = '';
   renderTagTable();
   const s = tagFiles.find(t => t.exif);
   if (s) { // pré-remplit avec les valeurs de la première photo
     const v = summary(s.exif);
-    if (!$('#tTitle').value) $('#tTitle').value = v.title;
-    if (!$('#tAuthor').value) $('#tAuthor').value = v.author;
-    if (!$('#tCopyright').value) $('#tCopyright').value = utf8Dec(clean(s.exif['0th'][I.Copyright]));
-    if (!$('#tKeywords').value) $('#tKeywords').value = xpDec(s.exif['0th'][I.XPKeywords]);
-    if (!$('#tComment').value) $('#tComment').value = xpDec(s.exif['0th'][I.XPComment]);
+    const fill = (id, val) => { if (!$(id).value && val) $(id).value = val; };
+    fill('#tTitle', v.title); fill('#tAuthor', v.author);
+    fill('#tCopyright', utf8Dec(clean(s.exif['0th'][I.Copyright])));
+    fill('#tKeywords', xpDec(s.exif['0th'][I.XPKeywords]));
+    fill('#tComment', xpDec(s.exif['0th'][I.XPComment]));
   }
 }
-setupDrop($('#dropTags'), addTagFiles);
+bindPicker($('#inTags'), addTagFiles);
+bindPicker($('#inTagsMore'), addTagFiles);
+$('#tagsClear').onclick = () => { tagFiles = []; renderTagTable(); $('#tagsResults').innerHTML = ''; };
 
+function syncTagField(cb) {
+  const field = cb.closest('.tagfield');
+  field.classList.toggle('off', !cb.checked);
+  field.querySelectorAll('input:not([type=checkbox]), select').forEach(i => { i.disabled = !cb.checked; });
+}
+$$('[data-apply]').forEach(cb => {
+  syncTagField(cb);
+  cb.addEventListener('change', () => {
+    syncTagField(cb);
+    if (cb.checked) cb.closest('.tagfield').querySelector('input:not([type=checkbox]), select')?.focus();
+  });
+});
+$('#tStripAll').addEventListener('change', () => $('#tagsForm').classList.toggle('stripping', $('#tStripAll').checked));
 $('#tDateMode').addEventListener('change', () => {
   const shift = $('#tDateMode').value === 'shift';
   $('#tDate').hidden = shift; $('#tShift').hidden = !shift;
 });
 $('#tGpsMode').addEventListener('change', () => { $('#tGpsSet').hidden = $('#tGpsMode').value !== 'set'; });
-// cocher automatiquement la case quand on modifie un champ
-const autoCheck = { tTitle: 'title', tAuthor: 'author', tCopyright: 'copyright', tKeywords: 'keywords', tComment: 'comment', tRating: 'rating', tDate: 'date', tShiftD: 'date', tShiftH: 'date', tShiftM: 'date', tLat: 'gps', tLon: 'gps' };
-for (const [id, key] of Object.entries(autoCheck)) $('#' + id).addEventListener('input', () => { $(`[data-apply=${key}]`).checked = true; });
 
 function setText(ifd, tag, value, enc) {
   if (value) ifd[tag] = enc(value); else delete ifd[tag];
 }
-
 function toRational(deg) {
   deg = Math.abs(deg);
   const d = Math.floor(deg), mf = (deg - d) * 60, m = Math.floor(mf), s = Math.round((mf - m) * 60 * 10000);
@@ -1079,56 +1309,61 @@ $('#btnTags').addEventListener('click', async () => {
   const ch = {};
   for (const [k, id] of [['title', 'tTitle'], ['author', 'tAuthor'], ['copyright', 'tCopyright'], ['keywords', 'tKeywords'], ['comment', 'tComment'], ['rating', 'tRating']])
     if (on(k)) ch[k] = { v: $('#' + id).value.trim() };
-  if (on('date')) {
+  if (!strip && on('date')) {
     if ($('#tDateMode').value === 'set') {
       const d = $('#tDate').value ? new Date($('#tDate').value) : null;
-      if (!d || isNaN(d)) return toast('Indiquez la date à appliquer.');
+      if (!d || isNaN(d)) return toast('Indiquez la date à appliquer.', { error: true });
       ch.date = { mode: 'set', date: d };
     } else {
       const ms = ((+$('#tShiftD').value || 0) * 1440 + (+$('#tShiftH').value || 0) * 60 + (+$('#tShiftM').value || 0)) * 60000;
-      if (!ms) return toast('Indiquez un décalage différent de zéro.');
+      if (!ms) return toast('Indiquez un décalage différent de zéro.', { error: true });
       ch.date = { mode: 'shift', shiftMs: ms };
     }
   }
-  if (on('gps')) {
+  if (!strip && on('gps')) {
     if ($('#tGpsMode').value === 'set') {
       const lat = parseFloat($('#tLat').value.replace(',', '.')), lon = parseFloat($('#tLon').value.replace(',', '.'));
-      if (!(Math.abs(lat) <= 90 && Math.abs(lon) <= 180)) return toast('Coordonnées GPS invalides (latitude -90 à 90, longitude -180 à 180).');
+      if (!(Math.abs(lat) <= 90 && Math.abs(lon) <= 180)) return toast('Coordonnées GPS invalides (latitude de -90 à 90, longitude de -180 à 180).', { error: true });
       ch.gps = { mode: 'set', lat, lon };
     } else ch.gps = { mode: 'remove' };
   }
-  if (!strip && !Object.keys(ch).length) return toast('Cochez au moins une information à modifier.');
+  if (!strip && !Object.keys(ch).length) return toast('Activez au moins une information à modifier.', { error: true });
 
   const todo = tagFiles.filter(t => t.exif);
-  const items = [], errors = tagFiles.filter(t => t.error).map(t => `${t.file.name} : ${t.error}`);
-  const prog = $('#tagsProgress'), btn = $('#btnTags'), uniq = uniqueNamer();
-  btn.disabled = true;
+  const items = [], errors = [], uniq = uniqueNamer();
+  const prog = $('#tagsProgress'), btn = $('#btnTags');
+  btn.dataset.busy = '1'; btn.disabled = true; btn.textContent = 'Modification en cours…';
   try {
     for (let i = 0; i < todo.length; i++) {
       const t = todo[i];
-      setProgress(prog, i, todo.length, `${i + 1} / ${todo.length} : ${t.file.name}`);
+      setProgress(prog, i, todo.length, `${i + 1} / ${todo.length} · ${t.file.name}`);
       await nextFrame();
       try {
         const bin = bufToBin(await t.file.arrayBuffer());
         let out;
         if (strip) out = piexif.remove(bin);
-        else {
-          const ex = applyTagChanges(JSON.parse(JSON.stringify(t.exif)), ch);
-          out = piexif.insert(safeDump(ex), bin);
-        }
-        items.push({ name: uniq(t.file.name), blob: new Blob([binToU8(out)], { type: 'image/jpeg' }) });
+        else out = piexif.insert(safeDump(applyTagChanges(JSON.parse(JSON.stringify(t.exif)), ch)), bin);
+        const blob = new Blob([binToU8(out)], { type: 'image/jpeg' });
+        items.push({ name: uniq(t.file.name), blob });
+        t.file = new File([blob], t.file.name, { type: 'image/jpeg' });
+        t.exif = readExif(await blob.arrayBuffer()) || t.exif;
       } catch (e) {
         console.error(e);
         errors.push(`${t.file.name} : ${e.message || e}`);
       }
     }
-  } finally { btn.disabled = false; prog.hidden = true; }
-  showResults($('#tagsResults'), items, errors, `${items.length} photo(s) modifiée(s)`);
-  if (items.length === 1) download(items[0].blob, items[0].name);
-  // met à jour le tableau avec les nouvelles valeurs
-  for (const it of items) {
-    const t = tagFiles.find(x => x.file.name === it.name);
-    if (t) { t.file = new File([it.blob], it.name, { type: 'image/jpeg' }); t.exif = readExif(await it.blob.arrayBuffer()) || t.exif; }
-  }
+  } finally { delete btn.dataset.busy; prog.hidden = true; }
   renderTagTable();
+  showResults($('#tagsResults'), items, errors, items.length ? 'Tags modifiés' : 'Aucune photo modifiée');
+  if (items.length === 1) download(items[0].blob, items[0].name);
 });
+
+// ---------------------------------------------------------------------------
+// Démarrage
+// ---------------------------------------------------------------------------
+loadSettings();
+refreshConvOptions();
+renderConvList();
+renderTagTable();
+const lastTab = localStorage.getItem('pb-tab');
+if (lastTab && lastTab !== 'conv' && $('#tab-' + lastTab)) showTab(lastTab);
